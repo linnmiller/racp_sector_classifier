@@ -1,0 +1,6 @@
+__pycache__/
+*.pyc
+.venv/
+.vscode/
+data/*.xlsx
+outputs/*.xlsx
