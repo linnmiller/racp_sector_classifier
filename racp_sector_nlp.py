@@ -1,1 +1,1 @@
-print("TESTING TESTING 123")
+print('I believe the environment is set up for coding!')
