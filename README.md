@@ -1,1 +1,1 @@
-This project contains a Python workflow to classify large spreadsheets of RACP grant applications into the five priority industries.
+This project contains a Python workflow to classify large spreadsheets of RACP grant applications into the five priority industries using NLP techniques, such as TF-IDF classification and cosine similarity.
