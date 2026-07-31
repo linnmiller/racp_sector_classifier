@@ -29,7 +29,7 @@ CONFIG = {
     "NONE_JSON_PATH": "prototypes/prototypes_none.json",
 
     # column names (adjust later if needed)
-    "DESCRIPTION_COLUMN": "project_description",
+    "DESCRIPTION_COLUMN": "Project Description",
 
     # canonical sector keys (used later)
     "CANONICAL_SECTORS": [
@@ -53,6 +53,7 @@ logging.basicConfig(
 )
 log = logging.getLogger("racp_nlp_setup")
 
+
 # ---- Friendly error helpers ----
 class UserConfigError(Exception):
     """Raised when user-configurable inputs (paths, columns, JSON schema) are invalid."""
@@ -61,14 +62,15 @@ class UserConfigError(Exception):
 
 def hint_and_exit(hint: str, exc: Exception) -> None:
     """
-    Log a concise, actionable message and exit with non-zero status.
-    Use this to convert common exceptions into human-readable guidance.
+    Log a short, actionable message and exit cleanly.
+    Use this in a top-level try/except around setup or chunk calls.
     """
-    logging.error("")  # spacer line
-    logging.error("❌ " + hint)
+    logging.error("")  # spacer
+    logging.error(f"❌ {hint}")
     logging.error(f"   Details: {exc.__class__.__name__}: {exc}")
-    logging.error("   Tip: Fix the issue above, then run again.")
+    logging.error("   Tip: fix the issue above, then run again.")
     sys.exit(1)
+
 
 # ---- Setup helpers (no NLP yet) ----
 def check_environment() -> None:
@@ -130,6 +132,7 @@ from pathlib import Path
 import json
 import logging
 import pandas as pd
+import re
 
 # Map common display labels to canonical sector keys used internally
 DISPLAY_TO_CANON = {
@@ -153,12 +156,29 @@ DISPLAY_TO_CANON = {
     "Energy": "energy",
 }
 
-def load_excel(path: str | Path, sheet_name: str | None) -> pd.DataFrame:
+def load_excel(path: str | Path, sheet_name: str | int | None) -> pd.DataFrame:
     p = Path(path)
     if not p.exists():
         raise FileNotFoundError(f"Excel file not found: {p}")
-    df = pd.read_excel(p, sheet_name=sheet_name)
-    return df
+
+    df_or_dict = pd.read_excel(p, sheet_name=sheet_name)
+
+    # If multiple sheets were requested (sheet_name=None), pandas returns a dict of DataFrames
+    if isinstance(df_or_dict, dict):
+        # Use a specific sheet if provided in CONFIG, otherwise first sheet
+        if isinstance(sheet_name, (str, int)):
+            # If sheet_name is a valid key/index, pandas would have returned a DF, not a dict.
+            # So here we just fall back to first available in the dict.
+            first_key = next(iter(df_or_dict))
+            return df_or_dict[first_key]
+        else:
+            # No explicit sheet requested; pick the first one deterministically
+            first_key = next(iter(df_or_dict))
+            return df_or_dict[first_key]
+
+    # Single sheet -> DataFrame
+    return df_or_dict
+
 
 def validate_dataset_columns(df: pd.DataFrame, required_col: str) -> None:
     if required_col not in df.columns:
@@ -181,14 +201,18 @@ def load_json(path: str | Path) -> Any:
         return json.load(f)
 
 
+import re  # <-- Add this near the top of your file if not already present
+
 def normalize_sector_prototypes(obj: Dict[str, Any]) -> Dict[str, List[str]]:
     """
     Accept various shapes and names; return a dict:
       { 'agriculture': [prototype_phrase, ...], ... }
+
     Supported input shapes per sector:
       - {"Agriculture": {"prototypes": ["phrase", ...]}}
       - {"Agriculture": ["phrase", ...]}
-      - {"Agriculture": "term1, term2; term3 ..."}  (split on commas/semicolons/spaces)
+      - {"Agriculture": "phrase 1, phrase 2; phrase 3"}  (we split on commas/semicolons)
+
     Unknown top-level keys are ignored with a warning.
     """
     # Initialize with empty lists for all canonical sectors
@@ -201,7 +225,7 @@ def normalize_sector_prototypes(obj: Dict[str, Any]) -> Dict[str, List[str]]:
             continue
 
         # Case 1: dict containing 'prototypes' list
-        if isinstance(v, dict) and "prototypes" in v and isinstance(v["prototypes"], list):
+        if isinstance(v, dict) and isinstance(v.get("prototypes"), list):
             phrases = [str(x).strip() for x in v["prototypes"] if str(x).strip()]
             out[canon].extend(phrases)
             continue
@@ -212,23 +236,23 @@ def normalize_sector_prototypes(obj: Dict[str, Any]) -> Dict[str, List[str]]:
             out[canon].extend(phrases)
             continue
 
-        # Case 3: plain string of terms/phrases
+        # Case 3: plain string of phrases -> split on commas/semicolons (keep multi-word phrases intact)
         if isinstance(v, str):
-            raw = v.replace(";", " ").replace(",", " ")
-            tokens = [t.strip() for t in raw.split() if t.strip()]
-            out[canon].extend(tokens)
+            parts = [p.strip() for p in re.split(r"[;,]", v) if p.strip()]
+            out[canon].extend(parts)
             continue
 
         logging.warning(f"Unrecognized format for key '{k}' in prototypes.json; skipping.")
 
-    # Deduplicate while preserving order
-    for s in out:
-        seen = set()
-        deduped = []
-        for phrase in outkey==phrase.lower():
+    # Deduplicate while preserving order (case-insensitive)
+    for s, phrases in out.items():
+        seen: set[str] = set()
+        deduped: List[str] = []
+        for phrase in phrases:
+            key = phrase.lower()
             if key not in seen:
                 seen.add(key)
-                deduped.append(phrase)
+                deduped.append(phrase)  # keep original casing for readability
         out[s] = deduped
 
     return out
@@ -291,8 +315,11 @@ def run_chunk1() -> tuple[pd.DataFrame, Dict[str, List[str]], List[str]]:
     """
     logging.info("Chunk 1: Loading Excel and JSONs; normalizing & validating ...")
 
-    # 1) Load Excel
-    df = load_excel(CONFIG["INPUT_EXCEL_PATH"], sheet_name=None)
+    # 1) Load Excel (use CONFIG['SHEET_NAME'] if present; else first sheet)
+    df = load_excel(
+        CONFIG["INPUT_EXCEL_PATH"],
+        sheet_name=CONFIG.get("SHEET_NAME", 0)  # 0 = first sheet
+    )
 
     # 2) Validate required column exists and has data
     validate_dataset_columns(df, CONFIG["DESCRIPTION_COLUMN"])
@@ -306,12 +333,18 @@ def run_chunk1() -> tuple[pd.DataFrame, Dict[str, List[str]], List[str]]:
     raw_none = load_json(CONFIG["NONE_JSON_PATH"])
     none_keywords = normalize_none_keywords(raw_none)
     if len(none_keywords) == 0:
-        raise ValueError("No 'none' keywords found in prototypes_none.json. Add at least a few terms/phrases.")
+        raise ValueError(
+            "No 'none' keywords found in prototypes_none.json. "
+            "Add at least a few terms/phrases."
+        )
 
     # 5) Print summary
     print_input_summary(df, sectors, none_keywords)
 
     logging.info("Chunk 1 complete: Inputs loaded and validated.")
+
+    # 6) IMPORTANT: return the three objects
+    return df, sectors, none_keywords
 
 
 def main():
