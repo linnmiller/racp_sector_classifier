@@ -122,57 +122,209 @@ def check_required_files() -> None:
             "data/ and prototypes/ as configured."
         )
 
+# -----------------------------
+# Chunk 1: Load & Validate Inputs (Excel + JSON)
+# -----------------------------
+from typing import Dict, List, Any
+from pathlib import Path
+import json
+import logging
+import pandas as pd
+
+# Map common display labels to canonical sector keys used internally
+DISPLAY_TO_CANON = {
+    "agriculture": "agriculture",
+    "Agriculture": "agriculture",
+
+    "life_sciences": "life_sciences",
+    "Life Sciences": "life_sciences",
+    "LifeSciences": "life_sciences",
+
+    "robotics_tech": "robotics_tech",
+    "Robotics and Technology": "robotics_tech",
+    "Robotics & Technology": "robotics_tech",
+    "Robotics": "robotics_tech",
+    "Technology": "robotics_tech",
+
+    "manufacturing": "manufacturing",
+    "Manufacturing": "manufacturing",
+
+    "energy": "energy",
+    "Energy": "energy",
+}
+
+def load_excel(path: str | Path, sheet_name: str | None) -> pd.DataFrame:
+    p = Path(path)
+    if not p.exists():
+        raise FileNotFoundError(f"Excel file not found: {p}")
+    df = pd.read_excel(p, sheet_name=sheet_name)
+    return df
+
+def validate_dataset_columns(df: pd.DataFrame, required_col: str) -> None:
+    if required_col not in df.columns:
+        raise KeyError(
+            f"Required column '{required_col}' not found in Excel.\n"
+            f"Available columns (first 30): {list(df.columns)[:30]}"
+        )
+    # Optional: ensure there is at least one non-empty description
+    if df[required_col].dropna().astype(str).str.len().sum() == 0:
+        raise ValueError(
+            f"Column '{required_col}' appears empty. Please confirm your Excel data."
+        )
+
+
+def load_json(path: str | Path) -> Any:
+    p = Path(path)
+    if not p.exists():
+        raise FileNotFoundError(f"JSON file not found: {p}")
+    with p.open("r", encoding="utf-8") as f:
+        return json.load(f)
+
+
+def normalize_sector_prototypes(obj: Dict[str, Any]) -> Dict[str, List[str]]:
+    """
+    Accept various shapes and names; return a dict:
+      { 'agriculture': [prototype_phrase, ...], ... }
+    Supported input shapes per sector:
+      - {"Agriculture": {"prototypes": ["phrase", ...]}}
+      - {"Agriculture": ["phrase", ...]}
+      - {"Agriculture": "term1, term2; term3 ..."}  (split on commas/semicolons/spaces)
+    Unknown top-level keys are ignored with a warning.
+    """
+    # Initialize with empty lists for all canonical sectors
+    out: Dict[str, List[str]] = {s: [] for s in CONFIG["CANONICAL_SECTORS"]}
+
+    for k, v in obj.items():
+        canon = DISPLAY_TO_CANON.get(k)
+        if canon is None:
+            logging.warning(f"Ignoring unknown top-level key in prototypes.json: '{k}'")
+            continue
+
+        # Case 1: dict containing 'prototypes' list
+        if isinstance(v, dict) and "prototypes" in v and isinstance(v["prototypes"], list):
+            phrases = [str(x).strip() for x in v["prototypes"] if str(x).strip()]
+            out[canon].extend(phrases)
+            continue
+
+        # Case 2: list of phrases directly
+        if isinstance(v, list):
+            phrases = [str(x).strip() for x in v if str(x).strip()]
+            out[canon].extend(phrases)
+            continue
+
+        # Case 3: plain string of terms/phrases
+        if isinstance(v, str):
+            raw = v.replace(";", " ").replace(",", " ")
+            tokens = [t.strip() for t in raw.split() if t.strip()]
+            out[canon].extend(tokens)
+            continue
+
+        logging.warning(f"Unrecognized format for key '{k}' in prototypes.json; skipping.")
+
+    # Deduplicate while preserving order
+    for s in out:
+        seen = set()
+        deduped = []
+        for phrase in outkey==phrase.lower():
+            if key not in seen:
+                seen.add(key)
+                deduped.append(phrase)
+        out[s] = deduped
+
+    return out
+
+
+def validate_sector_prototypes(proto: Dict[str, List[str]]) -> None:
+    missing = [s for s in CONFIG["CANONICAL_SECTORS"] if s not in proto]
+    if missing:
+        raise ValueError(f"Missing sector keys after normalization: {missing}")
+
+    for sector, phrases in proto.items():
+        if not isinstance(phrases, list) or len(phrases) == 0:
+            raise ValueError(f"Sector '{sector}' has no prototype phrases.")
+        bad = [p for p in phrases if not isinstance(p, str) or not p.strip()]
+        if bad:
+            raise ValueError(f"Sector '{sector}' has invalid/empty phrases (example): {bad[:3]}")
+
+
+def normalize_none_keywords(obj: Dict[str, Any]) -> List:
+    """
+    Expected:
+      - { "keywords": [ "museum", "library", ... ] }
+    Fallbacks:
+      - { "Keywords": [ ... ] } or any list under a top-level key
+      - "space/comma/semicolon separated string" -> split
+    """
+    if "keywords" in obj and isinstance(obj["keywords"], list):
+        return [str(x).strip() for x in obj["keywords"] if str(x).strip()]
+
+    # Try common variations or any list/string at top level
+    for k, v in obj.items():
+        if isinstance(v, list):
+            return [str(x).strip() for x in v if str(x).strip()]
+        if isinstance(v, str):
+            raw = v.replace(";", " ").replace(",", " ")
+            return [t.strip() for t in raw.split() if t.strip()]
+
+    raise ValueError("prototypes_none.json must contain a 'keywords' list (or a recognizable list/string of terms).")
+
+
+def print_input_summary(df: pd.DataFrame,
+                        sectors: Dict[str, List[str]],
+                        none_keywords: List[str]) -> None:
+    logging.info("----- INPUT SUMMARY -----")
+    logging.info(f"Rows in Excel: {len(df)}")
+    logging.info(f"Text column: '{CONFIG['DESCRIPTION_COLUMN']}'")
+    for s in CONFIG["CANONICAL_SECTORS"]:
+        logging.info(f"Sector '{s}': {len(sectors.get(s, []))} prototype phrases")
+    logging.info(f"'none' keywords: {len(none_keywords)}")
+    logging.info("-------------------------")
+
+
+def run_chunk1() -> tuple[pd.DataFrame, Dict[str, List[str]], List[str]]:
+    """
+    Orchestrates the input loading and validation step.
+    Returns:
+      - df (DataFrame)
+      - sectors (dict of sector -> list of prototype phrases)
+      - none_keywords (list of strings)
+    """
+    logging.info("Chunk 1: Loading Excel and JSONs; normalizing & validating ...")
+
+    # 1) Load Excel
+    df = load_excel(CONFIG["INPUT_EXCEL_PATH"], sheet_name=None)
+
+    # 2) Validate required column exists and has data
+    validate_dataset_columns(df, CONFIG["DESCRIPTION_COLUMN"])
+
+    # 3) Load sector prototypes JSON and normalize
+    raw_prototypes = load_json(CONFIG["PROTOTYPES_JSON_PATH"])
+    sectors = normalize_sector_prototypes(raw_prototypes)
+    validate_sector_prototypes(sectors)
+
+    # 4) Load 'none' keywords
+    raw_none = load_json(CONFIG["NONE_JSON_PATH"])
+    none_keywords = normalize_none_keywords(raw_none)
+    if len(none_keywords) == 0:
+        raise ValueError("No 'none' keywords found in prototypes_none.json. Add at least a few terms/phrases.")
+
+    # 5) Print summary
+    print_input_summary(df, sectors, none_keywords)
+
+    logging.info("Chunk 1 complete: Inputs loaded and validated.")
+
 
 def main():
-    try:
-        # Setup-only actions (no data processing yet)
-        check_environment()
-        ensure_directories()
-        check_required_files()
+    # Setup (from Chunk 0)
+    check_environment()
+    ensure_directories()
+    check_required_files()
 
-    except FileNotFoundError as e:
-        # Missing Excel or JSON files
-        hint_and_exit(
-            "A required input file is missing. Ensure your Excel and JSON files "
-            "exist at the paths shown above (data/ and prototypes/), or update CONFIG.",
-            e
-        )
+    # --- Call Chunk 1 ---
+    df, sectors, none_keywords = run_chunk1()
 
-    except UserConfigError as e:
-        # For future: if you raise UserConfigError from validators (e.g., JSON schema)
-        hint_and_exit(
-            "Your configuration or input schema appears invalid. Check CONFIG values "
-            "and JSON structure (e.g., 'prototypes' for sectors, 'keywords' for none).",
-            e
-        )
-
-    except KeyError as e:
-        # For future: missing columns in Excel (after we add Chunk 1)
-        hint_and_exit(
-            "A required column is missing in the Excel file. Verify CONFIG.DESCRIPTION_COLUMN "
-            "matches your sheet's header exactly.",
-            e
-        )
-
-    except ValueError as e:
-        # For future: empty lists, empty corpus, invalid thresholds, etc.
-        hint_and_exit(
-            "An input value or derived data is invalid (e.g., empty list, empty corpus). "
-            "Please review your inputs and JSON content.",
-            e
-        )
-
-    except Exception as e:
-        # Catch-all: unexpected errors. Keep concise, but signal it's unanticipated.
-        hint_and_exit(
-            "Unexpected error during setup. If this persists, try re-activating the virtual "
-            "environment and re-running. You can also share the error text for help.",
-            e
-        )
-
-    # If we got here, setup succeeded
-    log.info("Setup complete ✅  Ready for next chunk (loading & validation) when you say go.")
-
+    # Stop here until you say to proceed to Chunk 2
+    logging.info("Ready for Chunk 2 (text cleaning + TF-IDF fit) when you say go.")
 
 if __name__ == "__main__":
     main()
