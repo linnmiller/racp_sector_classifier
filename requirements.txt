@@ -1,0 +1,8 @@
+pandas
+scikit-learn
+openpyxl
+# Optional:
+numpy
+scipy
+tqdm
+XlsxWriter
