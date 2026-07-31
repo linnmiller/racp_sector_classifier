@@ -346,6 +346,194 @@ def run_chunk1() -> tuple[pd.DataFrame, Dict[str, List[str]], List[str]]:
     # 6) IMPORTANT: return the three objects
     return df, sectors, none_keywords
 
+# -----------------------------
+# Chunk 2: Text cleaning + TF-IDF fit
+# -----------------------------
+
+from typing import Dict, List
+from sklearn.feature_extraction.text import ENGLISH_STOP_WORDS
+
+# Domain stop words (customizable; keeps non-informative words out of vectors)
+DOMAIN_STOP_WORDS: set[str] = {
+    "project", "grant", "community", "county", "phase", "initiative"
+}
+
+def _normalize_whitespace(text: str) -> str:
+    return re.sub(r"\s+", " ", text).strip()
+
+def clean_text(text: str) -> str:
+    """
+    Normalize text for vectorization:
+      - lowercase
+      - remove punctuation/symbols (keep a-z, 0-9, spaces)
+      - collapse whitespace
+      - remove English + domain stop words
+    """
+    if text is None:
+        return ""
+    t = str(text).lower()
+    t = re.sub(r"[^a-z0-9\s]", " ", t)   # remove punctuation/symbols
+    t = _normalize_whitespace(t)
+    tokens = t.split()
+    stop = ENGLISH_STOP_WORDS.union(DOMAIN_STOP_WORDS)
+    tokens = [tok for tok in tokens if tok and tok not in stop]
+    return " ".join(tokens)
+
+def clean_list(items: List[str]) -> List:
+    """Clean each phrase/keyword; drop empties post-cleaning."""
+    out: List[str] = []
+    for s in items:
+        c = clean_text(s)
+        if c:
+            out.append(c)
+    return out
+
+def build_combined_corpus(
+    df: pd.DataFrame,
+    cleaned_sector_phrases: Dict[str, List[str]],
+    cleaned_none_keywords: List[str]
+) -> List:
+    """
+    Combined corpus used to fit TF-IDF:
+      - all cleaned project descriptions
+      - all cleaned sector prototype phrases (grouped later by sector)
+      - all cleaned 'none' keywords/phrases
+    """
+    descs = df[CONFIG["DESCRIPTION_COLUMN"]].astype(str).apply(clean_text).tolist()
+
+    combined: List[str] = []
+    combined.extend(descs)
+    for s in CONFIG["CANONICAL_SECTORS"]:
+        combined.extend(cleaned_sector_phrases.get(s, []))
+    combined.extend(cleaned_none_keywords)
+
+    return combined
+
+def fit_tfidf(corpus: List[str]) -> TfidfVectorizer:
+    """
+    Fit TF-IDF vectorizer on the combined corpus.
+    Defaults:
+      - stop_words='english' (we also removed stop-words in cleaning)
+      - ngram_range=(1,2) (unigrams + bigrams)
+      - max_df=0.95 (drop terms occurring in >95% of docs)
+      - min_df=1 (keep rare terms initially)
+      - norm='l2'
+    """
+    if not corpus or all(len(doc.strip()) == 0 for doc in corpus):
+        raise ValueError("Combined corpus is empty after cleaning. Check inputs and stop-word settings.")
+
+    vectorizer = TfidfVectorizer(
+        stop_words="english",
+        ngram_range=(1, 2),
+        max_df=0.95,
+        min_df=1,
+        norm="l2"
+    )
+    vectorizer.fit(corpus)
+    return vectorizer
+
+def run_chunk2(
+    df: pd.DataFrame,
+    sectors: Dict[str, List[str]],
+    none_keywords: List[str]
+) -> tuple[TfidfVectorizer, Dict[str, List[str]], List[str]]:
+    """
+    Orchestrates text cleaning and TF-IDF fitting.
+    Returns:
+      - vectorizer (fitted on combined corpus)
+      - cleaned_sector_phrases (dict per sector)
+      - cleaned_none_keywords (list)
+    Also stores df['clean_description'] for later chunks.
+    """
+    logging.info("Chunk 2: Cleaning text and fitting TF-IDF ...")
+
+    # Clean prototypes and 'none' keywords
+    cleaned_sector_phrases: Dict[str, List[str]] = {
+        s: clean_list(sectors.get(s, [])) for s in CONFIG["CANONICAL_SECTORS"]
+    }
+    cleaned_none_keywords: List[str] = clean_list(none_keywords)
+
+    # Clean descriptions and store in the DataFrame for later use
+    df["clean_description"] = df[CONFIG["DESCRIPTION_COLUMN"]].astype(str).apply(clean_text)
+
+    # Build combined corpus and fit TF-IDF
+    combined_corpus = build_combined_corpus(df, cleaned_sector_phrases, cleaned_none_keywords)
+    vectorizer = fit_tfidf(combined_corpus)
+
+    # Quick summary + preview
+    vocab_size = len(vectorizer.vocabulary_)
+    logging.info(f"TF-IDF fitted. Vocabulary size={vocab_size}, ngram_range=(1,2), max_df=0.95, min_df=1")
+    logging.info(f"Sample cleaned description: {df['clean_description'].head(1).tolist()}")
+
+    logging.info("Chunk 2 complete: vectorizer is ready.")
+    return vectorizer, cleaned_sector_phrases, cleaned_none_keywords
+
+# def verify_tfidf(
+#     vectorizer: TfidfVectorizer,
+#     df: pd.DataFrame,
+#     cleaned_sector_phrases: Dict[str, List[str]],
+#     cleaned_none_keywords: List[str]
+# ) -> None:
+#     """
+#     Lightweight checks to confirm TF-IDF is fitted and behaves as expected.
+#     Prints:
+#       - feature count and a small sample of feature names
+#       - IDF statistics (min/max/mean)
+#       - non-zero vector checks for a few descriptions
+#       - top-weighted terms in those descriptions
+#       - non-zero vectors for a sample sector phrase and a none keyword
+#       - stop-word-only doc should produce zero features
+#     """
+#     import numpy as np
+
+#     logging.info("===== TF-IDF DIAGNOSTICS =====")
+
+#     # 1) Feature space sanity
+#     features = vectorizer.get_feature_names_out()
+#     logging.info(f"Feature count: {len(features)}")
+#     logging.info(f"First 20 features: {features[:20].tolist()}")
+
+#     # 2) IDF statistics (should be positive; rarer terms have higher IDF)
+#     idf = vectorizer.idf_
+#     logging.info(f"IDF stats: min={idf.min():.3f}, mean={idf.mean():.3f}, max={idf.max():.3f}")
+
+#     # 3) Transform a few cleaned descriptions; check for non-empty vectors
+#     sample_descs = df["clean_description"].head(3).tolist()
+#     X = vectorizer.transform(sample_descs)
+#     nnz_per_row = [int(X[i].nnz) for i in range(X.shape[0])]
+#     logging.info(f"Sample description matrix shape: {X.shape} | nnz per row: {nnz_per_row}")
+#     for i in range(X.shape[0]):
+#         row = X[i]
+#         if row.nnz == 0:
+#             logging.warning(f"clean_description[{i}] produced an EMPTY TF-IDF vector; check cleaning/stop-words.")
+#             continue
+#         # Show top 5 weighted terms for readability
+#         indices = row.indices
+#         data = row.data
+#         top_idx = np.argsort(data)[-5:][::-1]  # indices of top weights
+#         top_terms = [(features[indices[j]], float(data[j])) for j in top_idx]
+#         logging.info(f"Top terms for clean_description[{i}]: {top_terms}")
+
+#     # 4) Sector phrase sanity: pick the first available phrase from any sector
+#     sample_sector_phrase = None
+#     for s in CONFIG["CANONICAL_SECTORS"]:
+#         if cleaned_sector_phrases.get(s):
+#             sample_sector_phrase = cleaned_sector_phrases[s][0]
+#             break
+#     if sample_sector_phrase:
+#         v = vectorizer.transform([sample_sector_phrase])
+#         logging.info(f"Sector sample '{sample_sector_phrase}' -> nnz={v.nnz} (should be > 0 if terms are in vocab)")
+
+#     # 5) None keyword sanity
+#     if cleaned_none_keywords:
+#         v_none = vectorizer.transform([cleaned_none_keywords[0]])
+#         logging.info(f"None keyword sample '{cleaned_none_keywords[0]}' -> nnz={v_none.nnz}")
+
+#     # 6) Stop-word-only doc should be empty (due to cleaning + stop_words='english')
+#     v_stop = vectorizer.transform(["the and of for is with"])
+#     logging.info(f"Stop-word-only doc nnz={v_stop.nnz} (expected 0)")
+
+#     logging.info("===== END TF-IDF DIAGNOSTICS =====")
 
 def main():
     # Setup (from Chunk 0)
@@ -356,8 +544,16 @@ def main():
     # --- Call Chunk 1 ---
     df, sectors, none_keywords = run_chunk1()
 
-    # Stop here until you say to proceed to Chunk 2
-    logging.info("Ready for Chunk 2 (text cleaning + TF-IDF fit) when you say go.")
+    # --- Call Chunk 2 ---
+    vectorizer, cleaned_sector_phrases, cleaned_none_keywords = run_chunk2(df, sectors, none_keywords)
+
+
+    # # --- TEMP: verify TF-IDF is working ---
+    # verify_tfidf(vectorizer, df, cleaned_sector_phrases, cleaned_none_keywords)
+
+    # Stop here until you say to proceed
+    logging.info("Diagnostics done. Ready for Chunk 3 when you are.")
+
 
 if __name__ == "__main__":
     main()
