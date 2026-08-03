@@ -14,6 +14,7 @@ import sys
 import json
 import logging
 from pathlib import Path
+import numpy as np
 
 # Third-party packages (installed in your venv)
 import pandas as pd
@@ -535,6 +536,108 @@ def run_chunk2(
 
 #     logging.info("===== END TF-IDF DIAGNOSTICS =====")
 
+# -----------------------------
+# Chunk 3: Vectorize & Cosine Similarity (scores)
+# -----------------------------
+from typing import Dict, List
+
+def _vectorize_list(vectorizer: TfidfVectorizer, items: List[str]) -> "scipy.sparse.csr_matrix":
+    """
+    Transform a list of cleaned strings into TF-IDF vectors.
+    Returns a sparse matrix of shape (len(items), n_features).
+    If items is empty, returns an empty 0 x n_features matrix (handled upstream).
+    """
+    if not items:
+        # Create an empty matrix with the right number of columns to avoid shape errors
+        # We infer n_features from the vectorizer vocabulary
+        n_features = len(vectorizer.vocabulary_)
+        from scipy.sparse import csr_matrix
+        return csr_matrix((0, n_features))
+    return vectorizer.transform(items)
+
+
+def _aggregate_similarity(sim_mat: np.ndarray, method: str = "mean") -> np.ndarray:
+    """
+    Aggregate similarities across prototypes for each project.
+    sim_mat shape: (n_projects, n_prototypes)
+    Returns: (n_projects,) aggregated scores
+    """
+    if sim_mat.size == 0:
+        # No prototypes for this bucket -> zeros for all projects
+        return np.zeros((sim_mat.shape[0],), dtype=float)
+    if method == "max":
+        return sim_mat.max(axis=1)
+    # default: mean
+    return sim_mat.mean(axis=1)
+
+
+def run_chunk3(
+    df: pd.DataFrame,
+    vectorizer: TfidfVectorizer,
+    cleaned_sector_phrases: Dict[str, List[str]],
+    cleaned_none_keywords: List[str],
+    agg_method: str = "mean"  # "mean" | "max"
+) -> pd.DataFrame:
+    """
+    Compute cosine-similarity scores for each project against:
+      - each sector's prototype phrases
+      - 'none' keywords/phrases
+
+    Returns:
+      scores_df: DataFrame indexed like df, with columns:
+        ['agriculture', 'life_sciences', 'robotics_tech', 'manufacturing', 'energy', 'none']
+    """
+    logging.info("Chunk 3: Vectorizing descriptions and prototypes; computing cosine similarities ...")
+
+    # 1) Vectorize project descriptions (cleaned in Chunk 2)
+    descs = df["clean_description"].astype(str).tolist()
+    project_matrix = vectorizer.transform(descs)  # shape (n_projects, n_features)
+
+    # 2) Vectorize each sector's prototypes
+    sector_mats: Dict[str, "scipy.sparse.csr_matrix"] = {}
+    for s in CONFIG["CANONICAL_SECTORS"]:
+        phrases = cleaned_sector_phrases.get(s, [])
+        mat = _vectorize_list(vectorizer, phrases)  # shape (n_prototypes_s, n_features)
+        if mat.shape[0] == 0:
+            logging.warning(f"Sector '{s}' has no cleaned prototype phrases; scores will be zeros.")
+        sector_mats[s] = mat
+
+    # 3) Vectorize 'none' keywords/phrases
+    none_mat = _vectorize_list(vectorizer, cleaned_none_keywords)
+    if none_mat.shape[0] == 0:
+        logging.warning("'none' keywords list is empty after cleaning; 'none' scores will be zeros.")
+
+    # 4) Compute cosine similarity per sector (aggregate across prototypes)
+    scores = {}
+    for s in CONFIG["CANONICAL_SECTORS"]:
+        proto_mat = sector_mats[s]  # (n_proto_s, n_features)
+        # cosine(project_matrix, proto_mat) -> (n_projects, n_proto_s)
+        try:
+            sim = cosine_similarity(project_matrix, proto_mat)
+        except ValueError as e:
+            # If shapes are incompatible or proto_mat is empty, handle gracefully
+            logging.warning(f"Cosine similarity failed for sector '{s}': {e}. Using zeros.")
+            sim = np.zeros((project_matrix.shape[0], 0), dtype=float)
+        scores[s] = _aggregate_similarity(sim, method=agg_method)
+
+    # 5) Compute 'none' similarity (aggregate)
+    try:
+        sim_none = cosine_similarity(project_matrix, none_mat)  # (n_projects, n_none)
+    except ValueError as e:
+        logging.warning(f"Cosine similarity failed for 'none' bucket: {e}. Using zeros.")
+        sim_none = np.zeros((project_matrix.shape[0], 0), dtype=float)
+    scores["none"] = _aggregate_similarity(sim_none, method=agg_method)
+
+    # 6) Assemble scores into a DataFrame aligned to df.index
+    scores_df = pd.DataFrame(scores, index=df.index)
+
+    # 7) Quick preview
+    logging.info("Chunk 3 complete: similarity scores computed.")
+    logging.info(f"Scores columns: {list(scores_df.columns)}")
+    logging.info(f"Sample scores (first row): {scores_df.head(1).to_dict(orient='records')}")
+
+    return scores_df
+
 def main():
     # Setup (from Chunk 0)
     check_environment()
@@ -551,9 +654,14 @@ def main():
     # # --- TEMP: verify TF-IDF is working ---
     # verify_tfidf(vectorizer, df, cleaned_sector_phrases, cleaned_none_keywords)
 
-    # Stop here until you say to proceed
-    logging.info("Diagnostics done. Ready for Chunk 3 when you are.")
+    # --- Call Chunk 3 ---
+    scores_df = run_chunk3(df, vectorizer, cleaned_sector_phrases, cleaned_none_keywords, agg_method="mean")
+
+    # Stop here until you say to proceed to Chunk 4
+    logging.info("Ready for Chunk 4 (classification + reasoning + Excel write) when you say go.")
 
 
 if __name__ == "__main__":
     main()
+
+
