@@ -425,9 +425,9 @@ def fit_tfidf(corpus: List[str]) -> TfidfVectorizer:
 
     vectorizer = TfidfVectorizer(
         stop_words="english",
-        ngram_range=(1, 2),
-        max_df=0.95,
-        min_df=1,
+        ngram_range=(1, 2),   # you can try (1, 3) later
+        max_df=0.99,          # was 0.95; drop only extremely ubiquitous terms
+        min_df=1,             # keep rares initially
         norm="l2"
     )
     vectorizer.fit(corpus)
@@ -638,6 +638,232 @@ def run_chunk3(
 
     return scores_df
 
+# -----------------------------
+# Chunk 4: Classification + Reasoning + Excel write
+# -----------------------------
+from typing import Dict, List, Optional
+from pathlib import Path
+
+def _format_score(v: float) -> str:
+    try:
+        return f"{float(v):.3f}"
+    except Exception:
+        return "NA"
+
+def classify_with_reasoning(
+    row_idx: int,
+    scores_row: Dict[str, float],
+    sector_keys: List[str],
+    thresholds: Dict[str, float]
+) -> tuple[str, str]:
+    """
+    Decide sector label for one project and return (label, reasoning_text).
+    Rules:
+      1) Pick sector with highest similarity.
+      2) If best sector score < MIN_POSITIVE_REQUIRED -> 'none'.
+      3) Else if none_score >= best_sector_score - NONE_OVERRIDE_DELTA -> 'none'.
+      4) Otherwise -> best sector.
+
+    thresholds example:
+      {"MIN_POSITIVE_REQUIRED": 0.22, "NONE_OVERRIDE_DELTA": 0.02}
+    """
+    # Pull scores for all sectors and none
+    sector_scores = {s: float(scores_row.get(s, 0.0)) for s in sector_keys}
+    none_score = float(scores_row.get("none", 0.0))
+
+    # Determine best sector
+    best_sector = max(sector_scores, key=sector_scores.get)
+    best_score = sector_scores[best_sector]
+
+    # Threshold checks
+    min_pos = float(thresholds.get("MIN_POSITIVE_REQUIRED", 0.8))
+    none_delta = float(thresholds.get("NONE_OVERRIDE_DELTA", -0.01))
+
+    # Case A: weak sector evidence -> none
+    if best_score < min_pos:
+        reason = (
+            f"[row={row_idx}] Classified as none because best sector '{best_sector}' "
+            f"similarity { _format_score(best_score) } < minimum required { _format_score(min_pos) }."
+            f" none={ _format_score(none_score) }; "
+            f"sectors: " +
+            ", ".join([f"{s}={_format_score(sector_scores[s])}" for s in sector_keys])
+        )
+        return "none", reason
+
+    # Case B: none tie-break override
+    # has to do with how close you want to decide between none and best_score; can set up this threshold to be any gap
+    if none_score >= (best_score - none_delta):
+        reason = (
+            f"[row={row_idx}] Classified as none because none similarity "
+            f"{ _format_score(none_score) } >= best sector '{best_sector}' "
+            f"{ _format_score(best_score) } - delta { _format_score(none_delta) }."
+            f" sectors: " +
+            ", ".join([f"{s}={_format_score(sector_scores[s])}" for s in sector_keys])
+        )
+        return "none", reason
+
+    # Case C: assign best sector
+    reason = (
+        f"[row={row_idx}] Classified as {best_sector} because {best_sector} "
+        f"similarity { _format_score(best_score) } is highest. none={ _format_score(none_score) }; "
+        f"other sector sims: " +
+        ", ".join([f"{s}={_format_score(sector_scores[s])}" for s in sector_keys if s != best_sector])
+    )
+    return best_sector, reason
+# --- Helper: extract top contributing terms for the winning sector match ---
+def _extract_top_terms_for_sector(
+    vectorizer: TfidfVectorizer,
+    project_text: str,
+    sector_phrases_clean: List[str],
+    top_k: int = 6
+) -> List[tuple[str, float]]:
+    """
+    For the given project text and the sector's cleaned prototype phrases:
+      1) Vectorize project and all sector phrases
+      2) Find the best-matching sector phrase by cosine similarity
+      3) Compute contributions: product of TF-IDF weights on shared features
+      4) Return top_k terms with their contribution weights (descending)
+
+    Notes:
+      - Uses cleaned text (you stored df['clean_description'] in Chunk 2)
+      - Contributions are approximate but intuitive: proj_w * proto_w for shared features
+    """
+    import numpy as np
+    from sklearn.metrics.pairwise import cosine_similarity
+
+    # Guard: no phrases -> nothing to show
+    if not sector_phrases_clean:
+        return []
+
+    # Vectorize the single project (clean) and all sector phrases (clean)
+    proj_vec = vectorizer.transform([project_text])         # (1, n_features)
+    proto_mat = vectorizer.transform(sector_phrases_clean)  # (n_proto, n_features)
+
+    # If either side is empty after vectorization, bail early
+    if proj_vec.nnz == 0 or proto_mat.shape[0] == 0:
+        return []
+
+    # Pick the best matching prototype by cosine sim
+    sims = cosine_similarity(proj_vec, proto_mat)           # (1, n_proto)
+    j_best = int(np.argmax(sims[0]))
+    best_proto_vec = proto_mat[j_best]                      # (1, n_features)
+
+    # Shared feature indices
+    shared_idx = np.intersect1d(proj_vec.indices, best_proto_vec.indices)
+    if shared_idx.size == 0:
+        return []
+
+    # Contribution = TF-IDF weight product on shared features
+    # Get per-feature weights efficiently
+    proj_data = {idx: w for idx, w in zip(proj_vec.indices, proj_vec.data)}
+    proto_data = {idx: w for idx, w in zip(best_proto_vec.indices, best_proto_vec.data)}
+
+    contrib = []
+    features = vectorizer.get_feature_names_out()
+    for idx in shared_idx:
+        w = proj_data.get(idx, 0.0) * proto_data.get(idx, 0.0)
+        if w > 0:
+            contrib.append((features[idx], float(w)))
+
+    # Sort by contribution descending and take top_k
+    contrib.sort(key=lambda x: x[1], reverse=True)
+    return contrib[:top_k]
+
+def run_chunk4(
+    df: pd.DataFrame,
+    scores_df: pd.DataFrame,
+    output_path: str,
+    thresholds: Optional[Dict[str, float]] = None,
+    *,
+    vectorizer: Optional[TfidfVectorizer] = None,
+    cleaned_sector_phrases: Optional[Dict[str, List[str]]] = None,
+    include_top_terms: bool = True,
+    top_k_terms: int = 6
+) -> pd.DataFrame:
+    """
+    Finalize results:
+      - Classify each project into a sector (or 'none')
+      - Create a human-readable reasoning column with key scores and decision path
+      - Optionally include top contributing words for the winning sector
+      - Write the Excel to `output_path`
+    """
+    logging.info("Chunk 4: Classifying projects, generating reasoning, and writing Excel ...")
+
+    thresholds = thresholds or {
+        "MIN_POSITIVE_REQUIRED": 0.12,
+        "NONE_OVERRIDE_DELTA": -.01,
+    }
+
+    sector_keys = CONFIG["CANONICAL_SECTORS"]
+    for col in sector_keys + ["none"]:
+        if col not in scores_df.columns:
+            logging.warning(f"Scores missing column '{col}'; substituting zeros.")
+            scores_df[col] = 0.0
+
+    scores_df = scores_df.loc[df.index]
+    df_out = df.copy()
+
+    labels: List[str] = []
+    reasons: List[str] = []
+
+    # Classify each row
+    labels: List[str] = []
+    reasons: List[str] = []
+    top_terms_col: List[str] = []  # <-- NEW: collect terms per row
+
+    for i in df_out.index:
+        scores_row = scores_df.loc[i].to_dict()
+        label, reason = classify_with_reasoning(
+            row_idx=int(i) if isinstance(i, (int, np.integer)) else i,
+            scores_row=scores_row,
+            sector_keys=sector_keys,
+            thresholds=thresholds
+        )
+
+        # Default when no terms are available
+        row_top_terms = ""
+
+        # If a sector won and user wants top terms, compute & store them
+        if include_top_terms and label != "none" and vectorizer is not None and cleaned_sector_phrases is not None:
+            project_clean = str(df_out.loc[i, "clean_description"])
+            phrases_clean = cleaned_sector_phrases.get(label, [])
+            top_terms = _extract_top_terms_for_sector(
+                vectorizer=vectorizer,
+                project_text=project_clean,
+                sector_phrases_clean=phrases_clean,
+                top_k=top_k_terms
+            )
+            if top_terms:
+                # Format the terms (omit numeric weights for readability)
+                row_top_terms = ", ".join([t for t, _w in top_terms])
+                # Optionally append terms into the reasoning text (keep or remove as you prefer)
+                reason = reason + f" Top terms for '{label}': {row_top_terms}."
+
+        labels.append(label)
+        reasons.append(reason)
+        top_terms_col.append(row_top_terms)
+
+    # Add columns to output
+    df_out["sector"] = labels
+    df_out["sector_reasoning"] = reasons
+    df_out["sector_top_terms"] = top_terms_col  # <-- NEW COLUMN
+
+    counts = df_out["sector"].value_counts(dropna=False).to_dict()
+    logging.info(f"Sector counts: {counts}")
+
+    out_path = Path(output_path)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+
+    try:
+        df_out.to_excel(out_path, index=False)
+        logging.info(f"✅ Wrote results to: {out_path.resolve()}")
+    except Exception as e:
+        logging.error(f"Failed to write Excel to '{out_path}': {e}")
+        raise
+
+    logging.info("Chunk 4 complete.")
+    return df_out
+
 def main():
     # Setup (from Chunk 0)
     check_environment()
@@ -655,10 +881,33 @@ def main():
     # verify_tfidf(vectorizer, df, cleaned_sector_phrases, cleaned_none_keywords)
 
     # --- Call Chunk 3 ---
-    scores_df = run_chunk3(df, vectorizer, cleaned_sector_phrases, cleaned_none_keywords, agg_method="mean")
+    
+    # After
+    scores_df = run_chunk3(df, vectorizer, cleaned_sector_phrases, cleaned_none_keywords, agg_method="max")
 
-    # Stop here until you say to proceed to Chunk 4
-    logging.info("Ready for Chunk 4 (classification + reasoning + Excel write) when you say go.")
+    best_sector = scores_df[CONFIG["CANONICAL_SECTORS"]].max(axis=1)
+    logging.info(
+        f"Best sector score stats: min={best_sector.min():.3f}, "
+        f"mean={best_sector.mean():.3f}, median={best_sector.median():.3f}, max={best_sector.max():.3f}"
+    )
+    logging.info(
+        f"'none' score stats: min={scores_df['none'].min():.3f}, "
+        f"mean={scores_df['none'].mean():.3f}, median={scores_df['none'].median():.3f}, "
+        f"max={scores_df['none'].max():.3f}"
+)
+    
+    # --- Call Chunk 4 ---
+    df_final = run_chunk4(
+        df=df,
+        scores_df=scores_df,
+        output_path=CONFIG["OUTPUT_EXCEL_PATH"],
+        thresholds={"MIN_POSITIVE_REQUIRED": 0.12, "NONE_OVERRIDE_DELTA": 0.00},  # tune as needed
+        vectorizer=vectorizer,
+        cleaned_sector_phrases=cleaned_sector_phrases,
+        include_top_terms=True,
+        top_k_terms=6
+    )
+    logging.info("Workflow complete. You can open the output Excel now.")
 
 
 if __name__ == "__main__":
