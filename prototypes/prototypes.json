@@ -1,8 +1,84 @@
 {
-  "Agriculture": "agriculture agribusiness farm farming crops livestock dairy horticulture aquaculture irrigation soil forestry ag-tech irrigation food systems cold chain grocer biogas logging timber apiculture agronomy",
-  "Energy": "energy grid power generation transmission renewable solar wind hydro geothermal battery storage microgrid charging station nuclear AC DC",
-  "Life Sciences": "health healthcare hospital clinic biotech biomanufacturing pharmaceutical drug medtech diagnostics biomedical innovation wet lab cleanroom therapy medicine bio medical device clinical trial",
-  "Manufacturing": "manufacturing plant factory mass production machining tooling fabrication materials processing assembly line supply chain quality advanced manufacturing",
-  "Robotics and Technology": "software automation robotics artificial intelligence ML deep learning cloud computing digital technology computer vision IoT edge computing cybersecurity data science"
+  "agriculture": {
+    "prototypes": [
+      "shipping container farm dedicated to urban agriculture and resident training",
+      "NatureWorks educational workshops and a farmers' market with a commercial kitchen",
+      "mixed-used and urban agriculture spaces with storm water mitigation",
+      "state-of-the-art research facilities for regenerative organic agriculture",
+      "agriculture solar-powered R&D greenhouse and clean food plant with freeze-drying facility",
+      "Center for Advanced Agriculture and Sustainability for applied research and workforce development",
+      "vertical interior agriculture center and farmer's market with a commercial kitchen",
+      "farmers' market expansion and building envelope upgrades",
+      "CEA lettuce production: greenhouse, packing houses, irrigation, lighting and climate systems",
+      "Agriculture Research and Commerce Complex with 5-acre farm",
+      "Lancaster vertical farm with water recapture, filtration and reuse system",
+      "Certified Non-GMO Organic Farm: barn with cleaning, processing, packaging, and storage areas",
+      "Markets facility design and redevelopment for the farmers' market"
+    ]
+  },
+  "energy": {
+    "prototypes": [
+      "rooftop solar with inverter housing and grid interconnection capabilities",
+      "advanced switchgear factory to modernize the electric grid and decarbonize the process",
+      "cooling tower replacement and conversion of steam-driven turbines to efficient electric motors",
+      "renewable energy manufacturing via green gasification producing diesel fuel and biochar",
+      "energy efficient building envelope, heating, and lighting upgrades",
+      "5MW solar farm with environmental remediation, grid modernization and electrical infrastructure",
+      "adaptive reuse for Energy Innovation Center focusing on energy innovation and incubation",
+      "biomass gasification facility generating renewable diesel fuel and biochar",
+      "solar panels plus natural gas-powered generator for resilient capacity",
+      "Solar Photovoltaic (PV) Power System with panels, inverters, racking and AC inverter combiner panels",
+      "geothermal heat pump HVAC and electricity from a solar-array",
+      "solar with battery energy storage system to eliminate CO2",
+      "electrical infrastructure upgrade: new switchgear, transformers, generators and ductbank"
+    ]
+  },
+  "life_sciences": {
+    "prototypes": [
+      "GMP cleanroom and wet lab build-out for bioprocess and diagnostics",
+      "bioprocess suite and biomanufacturing line with medical device assembly",
+      "clinical diagnostics laboratory renovation and expansion",
+      "research tower with laboratories and vivarium space",
+      "campus-wide HVAC building infrastructure: air-handling units, switchgear and components",
+      "CUP upgrades to facilitate build out of cGMP labs and manufacturing space",
+      "common area improvements for cGMP manufacturing and R&D campus",
+      "bio‑manufacturing campus with labs, offices, warehousing and training",
+      "modular lab and small-scale commercialization space",
+      "site preparation and infrastructure for life science buildings",
+      "innovation and community impact center with lab/office coworking",
+      "cell and gene therapy commercialization center with redundant HVAC mechanical systems",
+      "hospital ICU renovation with advanced medical booms and monitoring systems"
+    ]
+  },
+  "manufacturing": {
+    "prototypes": [
+      "CNC machining center expansion and tool-and-die shop with industrial automation",
+      "automated assembly line for precision components and process validation",
+      "material processing and blending solutions for aluminum and steel industries",
+      "defense manufacturing center at Navy Yard with compliant security and engineering upgrades",
+      "custom components manufacturing for defense and energy industries",
+      "air compressors, power redistribution, heat exchanger, nitrogen generation and processing tanks",
+      "blast furnace rebuild with semi‑robotic refining systems and site utilities",
+      "log yard, rail spur and manufacturing lines for wood products",
+      "manufacturing facility renovation with cranes, lighting, doors and utilities",
+      "eco‑friendly manufacturing facility with mechanical and electrical systems",
+      "biomanufacturing facility and institute to advance manufacturing process innovations",
+      "food processing facility conversion with water and sewer treatment and utility upgrades",
+      "consolidate manufacturing operations with warehousing and distribution space"
+    ]
+  },
+  "robotics_tech": {
+    "prototypes": [
+      "deep tech commercialization center for robotics and AI",
+      "Physical AI Accelerator in the Robotics Innovation Center",
+      "Center for Robotics with laboratory, classroom and programming space",
+      "AI and robotics aligned with secure infrastructure for breakthroughs",
+      "specialized laboratories for pipe installation, chiller system maintenance and emergency generator servicing for AI-driven data centers",
+      "collaboration space and soft-landing for advanced robotics and medical device support",
+      "engineering labs, VR lab and campus IT hub with systems and networks labs",
+      "STEM Education Center with robotics classroom and design & innovation laboratory",
+      "innovation district for robotics, artificial intelligence and advanced manufacturing",
+      "office/R&D spaces configurable for robotics and med tech companies"
+    ]
+  }
 }
-
