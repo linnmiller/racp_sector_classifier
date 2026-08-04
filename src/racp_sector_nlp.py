@@ -24,7 +24,7 @@ from sklearn.metrics.pairwise import cosine_similarity
 
 # ---- Configuration ----
 CONFIG = {
-    # relative paths (keep these as-is if you used the folder structure we discussed)
+
     "INPUT_EXCEL_PATH": "RACP Data/2023_RACP.xlsx",
     "PROTOTYPES_JSON_PATH": "prototypes/prototypes.json",
     "NONE_JSON_PATH": "prototypes/prototypes_none.json",
@@ -901,7 +901,7 @@ def main():
         df=df,
         scores_df=scores_df,
         output_path=CONFIG["OUTPUT_EXCEL_PATH"],
-        thresholds={"MIN_POSITIVE_REQUIRED": 0.12, "NONE_OVERRIDE_DELTA": 0.00},  # tune as needed
+        thresholds={"MIN_POSITIVE_REQUIRED": 0.05, "NONE_OVERRIDE_DELTA": -0.01},  # tune as needed
         vectorizer=vectorizer,
         cleaned_sector_phrases=cleaned_sector_phrases,
         include_top_terms=True,
